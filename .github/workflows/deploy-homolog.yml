@@ -20,31 +20,14 @@ jobs:
       - name: "Checkout do código"
         uses: actions/checkout@v4
 
-      # Cria arquivo temporário da chave SSH
-      - name: "Configurar chave SSH"
+      - name: "Deploy via RSync Homolog"
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
           chmod 600 deploy_key
 
-      # Adiciona fingerprint da VPS no known_hosts
-      - name: "Adicionar VPS ao known_hosts"
-        run: |
-          # Evita prompt de confirmação SSH
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          ssh -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} \
+            "mkdir -p ${{ env.VPS_PATH }}"
 
-      # Cria diretório inicial do projeto na VPS
-      - name: "Criar estrutura inicial da VPS"
-        run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Cria pasta raiz do projeto caso não exista
-            mkdir -p /root/git-public-api-homolog
-
-          EOF
-
-      # Envia os arquivos do projeto para VPS
-      - name: "Enviar arquivos para VPS"
-        run: |
           rsync -az --delete \
             -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
             --exclude ".git" \
@@ -57,96 +40,83 @@ jobs:
             --exclude "api/storage/framework/views/*" \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-      # Cria os arquivos .env automaticamente na VPS
-      - name: "Criar .envs do servidor"
-        run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+          rm -f deploy_key
 
-            # Entra na pasta do projeto
-            cd /root/git-public-api-homolog
-
-            # Cria .env raiz utilizado pelo docker/infra
-            echo '${{ secrets.ENV_ROOT }}' > .env
-
-            # Cria .env da aplicação Laravel
-            echo '${{ secrets.ENV_API }}' > api/.env
-
-          EOF
-
-      # Executa deploy docker e bootstrap Laravel
-      - name: "Build e deploy containers"
-        run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Interrompe execução caso algum comando falhe
+      - name: "Build e Comandos Laravel Homolog"
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
             set -e
 
-            # Entra na pasta do projeto
             cd /root/git-public-api-homolog
 
-            # Atualiza imagens caso existam imagens remotas
-            docker compose -f docker-compose.homolog.yml pull || true
+            mkdir -p api
 
-            # Faz build e sobe containers
-            docker compose -f docker-compose.homolog.yml up -d --build
+            cat > .env << 'ENV_ROOT_EOF'
+            ${{ secrets.ENV_ROOT }}
+            ENV_ROOT_EOF
 
-            # Aguarda containers iniciarem corretamente
-            sleep 15
+            cat > api/.env << 'ENV_API_EOF'
+            ${{ secrets.ENV_API }}
+            ENV_API_EOF
 
-            # Instala dependências composer dentro container Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              composer install --optimize-autoloader --no-interaction
+            chmod 600 .env api/.env
 
-            # Limpa caches antigos Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan optimize:clear
+            sed -i 's/\r//' docker/nginx/conf.d/homolog.conf || true
 
-            # Gera APP_KEY caso ainda não exista
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan key:generate --force || true
+            dc() {
+              docker compose --env-file .env -f docker-compose.homolog.yml "$@"
+            }
 
-            # Ajusta permissões Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              chmod -R 777 storage bootstrap/cache
+            dc pull || true
 
-            # Cria symlink storage/public
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan storage:link || true
+            dc up -d --build db redis
 
-            # Executa migrations automaticamente
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan migrate --force
+            dc run --rm -u root app mkdir -p \
+              /var/www/api/storage/framework/cache/data \
+              /var/www/api/storage/framework/sessions \
+              /var/www/api/storage/framework/views \
+              /var/www/api/bootstrap/cache
 
-            # Gera cache de configurações
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan config:cache
+            dc run --rm -u root app chown -R www-data:www-data \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache \
+              /var/www/api
 
-            # Gera cache de rotas
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan route:cache
+            dc run --rm -u root app chmod -R 775 \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache
 
-            # Gera cache de views blade
-            docker compose -f docker-compose.homolog.yml exec -T api \
-              php artisan view:cache
+            dc run --rm -u root app composer install \
+              --no-interaction \
+              --optimize-autoloader \
+              --working-dir=/var/www/api
 
-            # Reinicia containers principais
-            docker compose -f docker-compose.homolog.yml restart api nginx
+            dc run --rm -u root app php /var/www/api/artisan optimize:clear
 
-          EOF
+            dc run --rm -u root app php /var/www/api/artisan key:generate --force || true
 
-      # Exibe containers ativos na VPS
-      - name: "Verificar containers"
-        run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+            dc run --rm -u root app php /var/www/api/artisan storage:link --quiet || true
 
-            # Lista containers ativos
-            docker ps
+            dc run --rm -u root app php /var/www/api/artisan migrate --force
 
-          EOF
+            dc run --rm -u root app php /var/www/api/artisan optimize
 
-      # Remove chave privada temporária
-      - name: "Limpeza"
-        if: always()
-        run: |
-          # Remove arquivo da chave SSH
-          rm -f deploy_key
+            dc run --rm -u root app chown -R www-data:www-data \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache
+
+            dc run --rm -u root app chmod -R 775 \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache
+
+            dc up -d --build --force-recreate
+
+            dc exec -T -u root app php /var/www/api/artisan queue:restart || true
+
+            dc restart nginx queue scheduler || true
+
+            dc ps
