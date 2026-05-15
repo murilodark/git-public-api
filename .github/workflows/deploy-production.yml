@@ -1,68 +1,72 @@
 name: "Deploy Back Production"
 
-# Dispara o deploy automaticamente quando houver push na branch main
+# Executa deploy automático quando houver push na branch main
 on:
   push:
     branches:
       - main
 
-# Variáveis globais do workflow
 env:
-  # Compatibilidade do GitHub Actions com Node 24
+  # Compatibilidade actions node 24
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-  # Caminho onde o projeto ficará na VPS
+  # Caminho do projeto na VPS
   VPS_PATH: /root/git-public-api-production
 
-  # Arquivo docker compose utilizado no ambiente production
+  # Arquivo docker compose do production
   COMPOSE_FILE: docker-compose.production.yml
 
 jobs:
   deploy:
-    # Nome visual do job no GitHub Actions
     name: "Deploy Production"
-
-    # Runner Linux do GitHub
     runs-on: ubuntu-latest
-
-    # Usa os secrets do environment production
     environment: production
 
     steps:
-      # Faz checkout do repositório
+      # Faz checkout do projeto
       - name: "Checkout"
         uses: actions/checkout@v4
 
       # Cria arquivo temporário da chave SSH
       - name: "Configurar chave SSH"
         run: |
-          # Salva a chave privada enviada via GitHub Secrets
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
+          # Cria pasta SSH do runner
+          mkdir -p ~/.ssh
 
-          # Ajusta permissão obrigatória do SSH
-          chmod 600 deploy_key
+          # Permissão segura pasta SSH
+          chmod 700 ~/.ssh
 
-      # Adiciona fingerprint da VPS no known_hosts
+          # Salva chave privada do GitHub Secrets
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+
+          # Ajusta permissão obrigatória SSH
+          chmod 600 ~/.ssh/deploy_key
+
+      # Adiciona VPS ao known_hosts
       - name: "Adicionar VPS ao known_hosts"
         run: |
-          # Evita prompt de confirmação SSH
+          # Adiciona fingerprint SSH da VPS
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-      # Cria diretório inicial do projeto na VPS
+          # Ajusta permissão do arquivo
+          chmod 644 ~/.ssh/known_hosts
+
+      # Cria estrutura inicial na VPS
       - name: "Criar estrutura inicial da VPS"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+          ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
 
-            # Cria pasta raiz do projeto caso não exista
+            # Cria diretório principal do projeto
             mkdir -p /root/git-public-api-production
 
           EOF
 
-      # Envia os arquivos do projeto para VPS
+      # Envia arquivos do projeto para VPS
       - name: "Enviar arquivos para VPS"
         run: |
           rsync -az --delete \
-            -e "ssh -i deploy_key" \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            \
             --exclude ".git" \
             --exclude ".github" \
             --exclude "api/vendor" \
@@ -71,53 +75,54 @@ jobs:
             --exclude "api/storage/framework/cache/*" \
             --exclude "api/storage/framework/sessions/*" \
             --exclude "api/storage/framework/views/*" \
+            \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-      # Cria os arquivos .env automaticamente na VPS
+      # Cria arquivos .env automaticamente
       - name: "Criar .envs do servidor"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+          ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
 
             # Entra na pasta do projeto
             cd /root/git-public-api-production
 
-            # Cria .env raiz utilizado pelo docker/infra
+            # Cria .env raiz docker
             echo '${{ secrets.ENV_ROOT }}' > .env
 
-            # Cria .env da aplicação Laravel
+            # Cria .env Laravel API
             echo '${{ secrets.ENV_API }}' > api/.env
 
           EOF
 
-      # Executa deploy docker e bootstrap Laravel
+      # Executa deploy docker + Laravel
       - name: "Build e deploy containers"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+          ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
 
-            # Interrompe execução caso algum comando falhe
+            # Interrompe se ocorrer erro
             set -e
 
-            # Entra na pasta do projeto
+            # Entra na pasta projeto
             cd /root/git-public-api-production
 
-            # Atualiza imagens caso existam imagens remotas
+            # Atualiza imagens docker
             docker compose -f docker-compose.production.yml pull || true
 
-            # Faz build e sobe containers
+            # Builda e sobe containers
             docker compose -f docker-compose.production.yml up -d --build
 
-            # Aguarda containers iniciarem corretamente
-            sleep 15
+            # Aguarda inicialização containers
+            sleep 20
 
-            # Instala dependências PHP de produção
+            # Instala dependências composer de produção
             docker compose -f docker-compose.production.yml exec -T api \
               composer install --no-dev --optimize-autoloader --no-interaction
 
-            # Limpa caches antigos Laravel
+            # Limpa caches Laravel
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan optimize:clear
 
-            # Gera APP_KEY caso ainda não exista
+            # Gera APP_KEY caso necessário
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan key:generate --force || true
 
@@ -125,23 +130,23 @@ jobs:
             docker compose -f docker-compose.production.yml exec -T api \
               chmod -R 775 storage bootstrap/cache
 
-            # Cria symlink storage/public
+            # Cria link storage
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan storage:link || true
 
-            # Executa migrations em produção
+            # Executa migrations
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan migrate --force
 
-            # Gera cache de configurações
+            # Cache config Laravel
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan config:cache
 
-            # Gera cache de rotas
+            # Cache rotas Laravel
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan route:cache
 
-            # Gera cache de views
+            # Cache views blade
             docker compose -f docker-compose.production.yml exec -T api \
               php artisan view:cache
 
@@ -150,19 +155,19 @@ jobs:
 
           EOF
 
-      # Exibe containers ativos na VPS
+      # Mostra containers ativos
       - name: "Verificar containers"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+          ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
 
             # Lista containers ativos
             docker ps
 
           EOF
 
-      # Remove chave privada temporária
+      # Remove chave SSH temporária
       - name: "Limpeza"
         if: always()
         run: |
-          # Remove arquivo da chave SSH
-          rm -f deploy_key
+          # Remove chave privada temporária
+          rm -f ~/.ssh/deploy_key
