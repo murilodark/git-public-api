@@ -3,8 +3,8 @@
 Estrutura pública pronta para provisionamento de VPS + deploy automático CI/CD utilizando:
 
 * Docker
-* Docker Compose
 * Traefik
+* Docker Compose
 * Laravel API
 * React Frontend
 * GitHub Actions
@@ -30,6 +30,230 @@ Este projeto tem como objetivo disponibilizar uma estrutura desacoplada e escal�
 Tudo com deploy automatizado diretamente da branch do GitHub para VPS.
 
 ---
+
+
+# Instalação do Traefik (Infraestrutura Global VPS)
+
+O Traefik será responsável por:
+
+* Proxy reverso
+* HTTPS automático
+* SSL Let's Encrypt
+* Roteamento dos containers
+* Entrada única da VPS
+
+O Traefik deve ser instalado apenas uma vez na VPS.
+
+---
+
+# Criar Estrutura
+
+```bash
+mkdir -p /root/traefik
+cd /root/traefik
+```
+
+---
+
+# Criar Network Global
+
+Todos os projetos utilizarão esta network compartilhada:
+
+```bash
+docker network create traefik-proxy
+```
+
+---
+
+# Criar arquivo `.env`
+
+```bash
+nano .env
+```
+
+Conteúdo:
+
+```env
+ACME_EMAIL=seu-email@dominio.com
+```
+
+---
+
+# Criar docker-compose.yml
+
+```bash
+nano docker-compose.yml
+```
+
+Conteúdo:
+
+```yaml
+services:
+  traefik:
+    image: traefik:v2.11
+    container_name: traefik
+
+    command:
+      - --api.dashboard=false
+      - --api.insecure=false
+
+      - --log.level=INFO
+
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+
+    restart: always
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+
+    networks:
+      - traefik-proxy
+
+networks:
+  traefik-proxy:
+    external: true
+```
+
+---
+
+# Criar arquivo acme.json
+
+```bash
+mkdir -p letsencrypt
+
+touch letsencrypt/acme.json
+
+chmod 600 letsencrypt/acme.json
+```
+
+---
+
+# Subir Traefik
+
+```bash
+docker compose up -d
+```
+
+---
+
+# Validar Containers
+
+```bash
+docker ps
+```
+
+Deve aparecer:
+
+```text
+traefik
+```
+
+---
+
+# Como os Projetos Utilizam o Traefik
+
+Os projetos Laravel/React não expõem portas diretamente.
+
+Eles apenas entram na network:
+
+```yaml
+networks:
+  - traefik-proxy
+```
+
+e recebem labels:
+
+```yaml
+labels:
+  - traefik.enable=true
+```
+
+O Traefik detecta automaticamente os containers Docker e cria:
+
+* HTTPS
+* SSL
+* roteamento
+* domínio
+
+automaticamente.
+
+---
+
+# Exemplo de Integração de Container
+
+```yaml
+services:
+  nginx:
+    networks:
+      - traefik-proxy
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api.rule=Host(`api.seudominio.com`)
+      - traefik.http.routers.api.entrypoints=websecure
+      - traefik.http.routers.api.tls.certresolver=letsencrypt
+
+networks:
+  traefik-proxy:
+    external: true
+```
+
+---
+
+# Importante
+
+A VPS deve liberar:
+
+| Porta | Uso   |
+| ----- | ----- |
+| 80    | HTTP  |
+| 443   | HTTPS |
+
+---
+
+# Firewall Ubuntu
+
+```bash
+ufw allow 80
+ufw allow 443
+```
+
+---
+
+# Resultado Final
+
+Após subir um projeto:
+
+```text
+Container
+    ↓
+Traefik
+    ↓
+HTTPS automático
+    ↓
+Let's Encrypt
+    ↓
+Domínio funcionando
+```
+
 
 # Arquitetura
 
