@@ -26,11 +26,7 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
           chmod 600 deploy_key
 
-      # Adiciona fingerprint da VPS no known_hosts
-      - name: "Adicionar VPS ao known_hosts"
-        run: |
-          # Evita prompt de confirmação SSH
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+     
 
       # Cria diretório inicial do projeto na VPS
       - name: "Criar estrutura inicial da VPS"
