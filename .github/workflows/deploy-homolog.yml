@@ -1,79 +1,48 @@
 name: "Deploy Back Homolog"
 
-# Executa deploy automático quando houver push na branch develop
 on:
   push:
     branches:
       - develop
 
-# Variáveis globais do workflow
 env:
-  # Compatibilidade actions node 24
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-  # Caminho do projeto na VPS
   VPS_PATH: /root/git-public-api-homolog
-
-  # Arquivo docker compose do homolog
   COMPOSE_FILE: docker-compose.homolog.yml
 
 jobs:
   deploy:
-    # Nome visual do job
     name: "Deploy Homolog"
-
-    # Runner Linux GitHub
     runs-on: ubuntu-latest
-
-    # Usa environment homolog
     environment: homolog
 
     steps:
-
-      # Faz checkout do projeto
       - name: "Checkout"
         uses: actions/checkout@v4
 
-      # Cria arquivo temporário da chave SSH
       - name: "Configurar chave SSH"
         run: |
-          # Cria pasta SSH do runner
           mkdir -p ~/.ssh
-
-          # Permissão segura pasta SSH
           chmod 700 ~/.ssh
 
-          # Salva chave privada do GitHub Secrets
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-
-          # Ajusta permissão obrigatória SSH
           chmod 600 ~/.ssh/deploy_key
 
-      # Adiciona VPS ao known_hosts
       - name: "Adicionar VPS ao known_hosts"
         run: |
-          # Adiciona fingerprint SSH da VPS
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
-
-          # Ajusta permissão do arquivo
           chmod 644 ~/.ssh/known_hosts
 
-      # Cria estrutura inicial na VPS
       - name: "Criar estrutura inicial da VPS"
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Cria diretório principal do projeto
             mkdir -p /root/git-public-api-homolog
-
           EOF
 
-      # Envia arquivos do projeto para VPS
       - name: "Enviar arquivos para VPS"
         run: |
           rsync -az --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
-            \
             --exclude ".git" \
             --exclude ".github" \
             --exclude "api/vendor" \
@@ -82,99 +51,78 @@ jobs:
             --exclude "api/storage/framework/cache/*" \
             --exclude "api/storage/framework/sessions/*" \
             --exclude "api/storage/framework/views/*" \
-            \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-      # Cria arquivos .env automaticamente
       - name: "Criar .envs do servidor"
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Entra na pasta do projeto
             cd /root/git-public-api-homolog
 
-            # Cria .env raiz docker
-            echo '${{ secrets.ENV_ROOT }}' > .env
+            cat > .env << 'ENV_ROOT_EOF'
+          ${{ secrets.ENV_ROOT }}
+          ENV_ROOT_EOF
 
-            # Cria .env Laravel API
-            echo '${{ secrets.ENV_API }}' > api/.env
-
+            cat > api/.env << 'ENV_API_EOF'
+          ${{ secrets.ENV_API }}
+          ENV_API_EOF
           EOF
 
-      # Executa deploy docker + Laravel
       - name: "Build e deploy containers"
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Interrompe se ocorrer erro
             set -e
 
-            # Entra na pasta projeto
             cd /root/git-public-api-homolog
 
-            # Atualiza imagens docker
             docker compose -f docker-compose.homolog.yml pull || true
 
-            # Builda e sobe containers
             docker compose -f docker-compose.homolog.yml up -d --build
 
-            # Aguarda inicialização containers
             sleep 20
 
-            # Instala dependências composer
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml ps
+
+            docker compose -f docker-compose.homolog.yml run --rm api \
               composer install --optimize-autoloader --no-interaction
 
-            # Limpa caches Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan optimize:clear
 
-            # Gera APP_KEY caso necessário
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan key:generate --force || true
 
-            # Ajusta permissões Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               chmod -R 777 storage bootstrap/cache
 
-            # Cria link storage
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan storage:link || true
 
-            # Executa migrations
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan migrate --force
 
-            # Cache config Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan config:cache
 
-            # Cache rotas Laravel
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan route:cache
 
-            # Cache views blade
-            docker compose -f docker-compose.homolog.yml exec -T api \
+            docker compose -f docker-compose.homolog.yml run --rm api \
               php artisan view:cache
 
-            # Reinicia containers principais
-            docker compose -f docker-compose.homolog.yml restart api nginx
+            docker compose -f docker-compose.homolog.yml up -d --build
 
+            docker compose -f docker-compose.homolog.yml restart nginx scheduler || true
+
+            docker compose -f docker-compose.homolog.yml ps
           EOF
 
-      # Mostra containers ativos
       - name: "Verificar containers"
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Lista containers ativos
             docker ps
-
           EOF
 
-      # Remove chave SSH temporária
       - name: "Limpeza"
         if: always()
         run: |
-          # Remove chave privada temporária
           rm -f ~/.ssh/deploy_key
