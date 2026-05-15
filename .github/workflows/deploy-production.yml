@@ -26,16 +26,11 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
           chmod 600 deploy_key
 
-     
-
-      # Cria diretório inicial do projeto na VPS
+      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
       - name: "Criar estrutura inicial da VPS"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Cria pasta raiz do projeto caso não exista
+          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
             mkdir -p /root/git-public-api-production
-
           EOF
 
       # Envia os arquivos do projeto para VPS
@@ -53,96 +48,70 @@ jobs:
             --exclude "api/storage/framework/views/*" \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-      # Cria os arquivos .env automaticamente na VPS
+      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
       - name: "Criar .envs do servidor"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Entra na pasta do projeto
+          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
             cd /root/git-public-api-production
-
-            # Cria .env raiz utilizado pelo docker/infra
             echo '${{ secrets.ENV_ROOT }}' > .env
-
-            # Cria .env da aplicação Laravel
             echo '${{ secrets.ENV_API }}' > api/.env
-
           EOF
 
       # Executa deploy docker e bootstrap Laravel
+      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
+      # Nota: Substituído o serviço 'api' por 'app' conforme seu docker-compose local
       - name: "Build e deploy containers"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Interrompe execução caso algum comando falhe
+          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
             set -e
 
-            # Entra na pasta do projeto
             cd /root/git-public-api-production
 
-            # Atualiza imagens caso existam imagens remotas
             docker compose -f docker-compose.production.yml pull || true
-
-            # Faz build e sobe containers
             docker compose -f docker-compose.production.yml up -d --build
 
-            # Aguarda containers iniciarem corretamente
+            echo "Aguardando inicialização dos containers..."
             sleep 15
 
-            # Instala dependências PHP de produção
-            docker compose -f docker-compose.production.yml exec -T api \
+            docker compose -f docker-compose.production.yml exec -T app \
               composer install --no-dev --optimize-autoloader --no-interaction
 
-            # Limpa caches antigos Laravel
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan optimize:clear
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan optimize:clear
 
-            # Gera APP_KEY caso ainda não exista
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan key:generate --force || true
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan key:generate --force || true
 
-            # Ajusta permissões Laravel
-            docker compose -f docker-compose.production.yml exec -T api \
-              chmod -R 775 storage bootstrap/cache
+            docker compose -f docker-compose.production.yml exec -T app \
+              chmod -R 775 /var/www/api/storage /var/www/api/bootstrap/cache
 
-            # Cria symlink storage/public
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan storage:link || true
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan storage:link || true
 
-            # Executa migrations em produção
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan migrate --force
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan migrate --force
 
-            # Gera cache de configurações
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan config:cache
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan config:cache
 
-            # Gera cache de rotas
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan route:cache
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan route:cache
 
-            # Gera cache de views
-            docker compose -f docker-compose.production.yml exec -T api \
-              php artisan view:cache
+            docker compose -f docker-compose.production.yml exec -T app \
+              php /var/www/api/artisan view:cache
 
-            # Reinicia containers principais
-            docker compose -f docker-compose.production.yml restart api nginx
-
+            docker compose -f docker-compose.production.yml restart app nginx
           EOF
 
-      # Exibe containers ativos na VPS
+      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
       - name: "Verificar containers"
         run: |
-          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
-
-            # Lista containers ativos
-            docker ps
-
+          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
+            docker compose -f docker-compose.production.yml ps
           EOF
 
-      # Remove chave privada temporária
+      # Remove chave privada temporária com segurança garantida
       - name: "Limpeza"
         if: always()
         run: |
-          # Remove arquivo da chave SSH
           rm -f deploy_key
