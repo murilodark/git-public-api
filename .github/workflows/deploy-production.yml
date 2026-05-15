@@ -20,22 +20,16 @@ jobs:
       - name: "Checkout do código"
         uses: actions/checkout@v4
 
-      # Cria arquivo temporário da chave SSH
-      - name: "Configurar chave SSH"
+      # Otimização de Segurança: O bloco 'trap' destrói o arquivo da chave mesmo se o rsync cair no meio
+      - name: "Deploy via RSync Production"
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
           chmod 600 deploy_key
+          trap 'rm -f deploy_key' EXIT
 
-      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
-      - name: "Criar estrutura inicial da VPS"
-        run: |
-          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
-            mkdir -p /root/git-public-api-production
-          EOF
+          ssh -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} \
+            "mkdir -p ${{ env.VPS_PATH }}"
 
-      # Envia os arquivos do projeto para VPS
-      - name: "Enviar arquivos para VPS"
-        run: |
           rsync -az --delete \
             -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
             --exclude ".git" \
@@ -48,70 +42,85 @@ jobs:
             --exclude "api/storage/framework/views/*" \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
-      - name: "Criar .envs do servidor"
-        run: |
-          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
-            cd /root/git-public-api-production
-            echo '${{ secrets.ENV_ROOT }}' > .env
-            echo '${{ secrets.ENV_API }}' > api/.env
-          EOF
-
-      # Executa deploy docker e bootstrap Laravel
-      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
-      # Nota: Substituído o serviço 'api' por 'app' conforme seu docker-compose local
-      - name: "Build e deploy containers"
-        run: |
-          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
+      - name: "Build e Comandos Laravel Production"
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
             set -e
 
             cd /root/git-public-api-production
 
-            docker compose -f docker-compose.production.yml pull || true
-            docker compose -f docker-compose.production.yml up -d --build
+            mkdir -p api
 
-            echo "Aguardando inicialização dos containers..."
-            sleep 15
+            cat > .env << 'ENV_ROOT_EOF'
+            ${{ secrets.ENV_ROOT }}
+            ENV_ROOT_EOF
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              composer install --no-dev --optimize-autoloader --no-interaction
+            cat > api/.env << 'ENV_API_EOF'
+            ${{ secrets.ENV_API }}
+            ENV_API_EOF
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan optimize:clear
+            chmod 600 .env api/.env
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan key:generate --force || true
+            sed -i 's/\r//' docker/nginx/conf.d/production.conf || true
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              chmod -R 775 /var/www/api/storage /var/www/api/bootstrap/cache
+            dc() {
+              docker compose --env-file .env -f docker-compose.production.yml "$@"
+            }
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan storage:link || true
+            dc pull || true
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan migrate --force
+            # Otimização de Velocidade: Sobe toda a infraestrutura base de uma só vez
+            dc up -d --build
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan config:cache
+            # Otimização de Velocidade: Substituído 'dc run --rm' por 'dc exec -T'
+            dc exec -T -u root app mkdir -p \
+              /var/www/api/storage/framework/cache/data \
+              /var/www/api/storage/framework/sessions \
+              /var/www/api/storage/framework/views \
+              /var/www/api/bootstrap/cache
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan route:cache
+            dc exec -T -u root app chown -R www-data:www-data \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache \
+              /var/www/api
 
-            docker compose -f docker-compose.production.yml exec -T app \
-              php /var/www/api/artisan view:cache
+            dc exec -T -u root app chmod -R 775 \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache
 
-            docker compose -f docker-compose.production.yml restart app nginx
-          EOF
+            # Mantido o padrão de produção (--no-dev) com execução veloz
+            dc exec -T -u root app composer install \
+              --no-dev \
+              --no-interaction \
+              --optimize-autoloader \
+              --working-dir=/var/www/api
 
-      # Correção: Adicionado -T e -o StrictHostKeyChecking=no
-      - name: "Verificar containers"
-        run: |
-          ssh -T -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} << 'EOF'
-            docker compose -f docker-compose.production.yml ps
-          EOF
+            dc exec -T -u root app php /var/www/api/artisan optimize:clear
 
-      # Remove chave privada temporária com segurança garantida
-      - name: "Limpeza"
-        if: always()
-        run: |
-          rm -f deploy_key
+            dc exec -T -u root app php /var/www/api/artisan key:generate --force || true
+
+            dc exec -T -u root app php /var/www/api/artisan storage:link --quiet || true
+
+            dc exec -T -u root app php /var/www/api/artisan migrate --force
+
+            dc exec -T -u root app php /var/www/api/artisan optimize
+
+            dc exec -T -u root app chown -R www-data:www-data \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache
+
+            dc exec -T -u root app chmod -R 775 \
+              /var/www/api/storage \
+              /var/www/api/bootstrap/cache
+
+            dc up -d --build --force-recreate
+
+            dc exec -T -u root app php /var/www/api/artisan queue:restart || true
+
+            dc restart nginx queue scheduler || true
+
+            dc ps
