@@ -5,13 +5,14 @@
 /api/node_modules/
 /api/public/storage
 /api/public/hot
-/api/storage/*.key
 /api/.phpunit.result.cache
+
+# Correção: Garante que chaves em subpastas do storage também sejam ignoradas
+/api/storage/**/*.key
 
 # ======================================
 # Ambiente
 # ======================================
-# Use .env.example e api/.env.example como base
 .env
 .env.*
 !.env.example
@@ -24,46 +25,48 @@
 /docs-privado/
 
 # ======================================
-# Cache, logs e temporários
+# Cache, logs e temporários (Preservando a estrutura para o Docker)
 # ======================================
 /api/storage/framework/cache/*
 /api/storage/framework/sessions/*
 /api/storage/framework/testing/*
 /api/storage/framework/views/*
 /api/storage/logs/*
+
+# Mantém os arquivos estruturais ocultos para o Git criar as pastas vazias no deploy
+!/api/storage/framework/cache/.gitignore
+!/api/storage/framework/sessions/.gitignore
+!/api/storage/framework/testing/.gitignore
+!/api/storage/framework/views/.gitignore
 !/api/storage/logs/.gitignore
 
 # ======================================
 # Docker & Banco de Dados
 # ======================================
-# Ignorar apenas dados persistentes, mantendo configs versionadas
 /docker/mysql/*
 /docker/redis/*
 /docker/*/logs/*
 
-# Manter configurações Docker/Nginx/PHP
 !/docker/nginx/conf.d/*.conf
 !/docker/mysql-backup/*.sh
 !/docker/php/*.ini
 
-# Backups locais
 /backups/*.sql
 /backups/*.gz
 
 *.sock
-*.lock
 mysql.sock
 
+# Correção: Impede que o *.lock genérico bloqueie o composer.lock do Laravel
+*.lock
+!/api/composer.lock
+
 # ======================================
-# Arquivos pessoais / locais
+# Arquivos pessoais / locais / IDEs
 # ======================================
 comando-docker.txt
 *.sql
 *.sqlite
-
-# ======================================
-# IDEs e SO
-# ======================================
 .vscode/
 .idea/
 *.swp

@@ -20,10 +20,12 @@ jobs:
       - name: "Checkout do código"
         uses: actions/checkout@v4
 
+      # Otimização: Uso de trap garante a exclusão da chave mesmo se o rsync falhar
       - name: "Deploy via RSync Homolog"
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
           chmod 600 deploy_key
+          trap 'rm -f deploy_key' EXIT
 
           ssh -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} \
             "mkdir -p ${{ env.VPS_PATH }}"
@@ -40,8 +42,6 @@ jobs:
             --exclude "api/storage/framework/views/*" \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-          rm -f deploy_key
-
       - name: "Build e Comandos Laravel Homolog"
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -51,10 +51,12 @@ jobs:
           script: |
             set -e
 
-            cd /root/git-public-api-homolog
+            cd ${{ env.VPS_PATH }}
 
+            # Garante a existência da subpasta antes da escrita do .env
             mkdir -p api
 
+            # Escrita segura dos arquivos de ambiente
             cat > .env << 'ENV_ROOT_EOF'
             ${{ secrets.ENV_ROOT }}
             ENV_ROOT_EOF
@@ -65,58 +67,54 @@ jobs:
 
             chmod 600 .env api/.env
 
+            # Correção de quebra de linha de scripts/configs do Windows
             sed -i 's/\r//' docker/nginx/conf.d/homolog.conf || true
 
+            # Atalho para o comando docker compose unificado
             dc() {
-              docker compose --env-file .env -f docker-compose.homolog.yml "$@"
+              docker compose --env-file .env -f ${{ env.COMPOSE_FILE }} "$@"
             }
 
+            echo "=> Atualizando imagens e subindo a infraestrutura..."
             dc pull || true
+            dc up -d --build
 
-            dc up -d --build db redis
-
-            dc run --rm -u root app mkdir -p \
+            echo "=> Criando estruturas de pastas internas requeridas pelo Laravel..."
+            dc exec -T -u root app mkdir -p \
               /var/www/api/storage/framework/cache/data \
               /var/www/api/storage/framework/sessions \
               /var/www/api/storage/framework/views \
+              /var/www/api/storage/logs \
               /var/www/api/bootstrap/cache
 
-            dc run --rm -u root app chown -R www-data:www-data \
-              /var/www/api/storage \
-              /var/www/api/bootstrap/cache \
-              /var/www/api
+            echo "=> Ajustando permissões de escrita (apenas nas pastas necessárias)..."
+            dc exec -T -u root app chown -R www-data:www-data /var/www/api/storage /var/www/api/bootstrap/cache
+            dc exec -T -u root app chmod -R 775 /var/www/api/storage /var/www/api/bootstrap/cache
 
-            dc run --rm -u root app chmod -R 775 \
-              /var/www/api/storage \
-              /var/www/api/bootstrap/cache
-
-            dc run --rm -u root app composer install \
+            echo "=> Gerenciando dependências do PHP com Composer..."
+            dc exec -T -u root app composer install \
               --no-interaction \
               --optimize-autoloader \
               --working-dir=/var/www/api
 
-            dc run --rm -u root app php /var/www/api/artisan optimize:clear
+            echo "=> Limpando caches antigos do Artisan..."
+            dc exec -T -u root app php /var/www/api/artisan optimize:clear
 
-            dc run --rm -u root app php /var/www/api/artisan key:generate --force || true
+            echo "=> Criando links simbólicos de storage..."
+            dc exec -T -u root app php /var/www/api/artisan storage:link --quiet || true
 
-            dc run --rm -u root app php /var/www/api/artisan storage:link --quiet || true
+            echo "=> Executando as migrações do banco de dados..."
+            dc exec -T -u root app php /var/www/api/artisan migrate --force
 
-            dc run --rm -u root app php /var/www/api/artisan migrate --force
+            echo "=> Gerando novos caches de performance do Laravel..."
+            dc exec -T -u root app php /var/www/api/artisan optimize
 
-            dc run --rm -u root app php /var/www/api/artisan optimize
+            echo "=> Forçando recriação/releitura limpa dos containers de microsserviços..."
+            dc up -d --force-recreate app nginx queue scheduler
 
-            dc run --rm -u root app chown -R www-data:www-data \
-              /var/www/api/storage \
-              /var/www/api/bootstrap/cache
-
-            dc run --rm -u root app chmod -R 775 \
-              /var/www/api/storage \
-              /var/www/api/bootstrap/cache
-
-            dc up -d --build --force-recreate
-
+            echo "=> Reiniciando workers do ecossistema Laravel..."
             dc exec -T -u root app php /var/www/api/artisan queue:restart || true
-
             dc restart nginx queue scheduler || true
 
+            echo "=> Status atual dos containers em homologação:"
             dc ps
