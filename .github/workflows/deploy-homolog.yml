@@ -76,21 +76,18 @@ jobs:
 
             docker compose -f docker-compose.homolog.yml pull || true
 
-            docker compose -f docker-compose.homolog.yml up -d --build
+            # Sobe somente dependências primeiro
+            docker compose -f docker-compose.homolog.yml up -d --build db redis
 
-            sleep 20
-
-            docker compose -f docker-compose.homolog.yml ps
-
-            # Corrige permissões do projeto dentro do container
+            # Corrige permissões antes do composer
             docker compose -f docker-compose.homolog.yml run --rm --user root app \
               chown -R www-data:www-data /var/www/api
 
-            # Instala dependências Composer
+            # Instala vendor automaticamente
             docker compose -f docker-compose.homolog.yml run --rm --user root app \
               composer install --optimize-autoloader --no-interaction
 
-            # Ajusta permissões Laravel
+            # Garante permissões Laravel
             docker compose -f docker-compose.homolog.yml run --rm --user root app \
               chmod -R 775 storage bootstrap/cache
 
@@ -99,9 +96,6 @@ jobs:
 
             docker compose -f docker-compose.homolog.yml run --rm app \
               php artisan key:generate --force || true
-
-            docker compose -f docker-compose.homolog.yml run --rm app \
-              chmod -R 777 storage bootstrap/cache
 
             docker compose -f docker-compose.homolog.yml run --rm app \
               php artisan storage:link || true
@@ -118,9 +112,10 @@ jobs:
             docker compose -f docker-compose.homolog.yml run --rm app \
               php artisan view:cache
 
+            # Agora sim sobe tudo, incluindo queue e scheduler
             docker compose -f docker-compose.homolog.yml up -d --build
 
-            docker compose -f docker-compose.homolog.yml restart nginx scheduler queue || true
+            docker compose -f docker-compose.homolog.yml restart nginx queue scheduler || true
 
             docker compose -f docker-compose.homolog.yml ps
           EOF
