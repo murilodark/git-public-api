@@ -120,7 +120,7 @@ jobs:
 
             docker compose -f docker-compose.homolog.yml up -d --build
 
-            docker compose -f docker-compose.homolog.yml restart nginx scheduler || true
+            docker compose -f docker-compose.homolog.yml restart nginx scheduler queue || true
 
             docker compose -f docker-compose.homolog.yml ps
           EOF
