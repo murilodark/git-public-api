@@ -82,8 +82,17 @@ jobs:
 
             docker compose -f docker-compose.homolog.yml ps
 
-            docker compose -f docker-compose.homolog.yml run --rm app \
+            # Corrige permissões do projeto dentro do container
+            docker compose -f docker-compose.homolog.yml run --rm --user root app \
+              chown -R www-data:www-data /var/www/api
+
+            # Instala dependências Composer
+            docker compose -f docker-compose.homolog.yml run --rm --user root app \
               composer install --optimize-autoloader --no-interaction
+
+            # Ajusta permissões Laravel
+            docker compose -f docker-compose.homolog.yml run --rm --user root app \
+              chmod -R 775 storage bootstrap/cache
 
             docker compose -f docker-compose.homolog.yml run --rm app \
               php artisan optimize:clear
