@@ -20,16 +20,31 @@ jobs:
       - name: "Checkout do código"
         uses: actions/checkout@v4
 
-      # Otimização: Uso de trap garante a exclusão da chave mesmo se o rsync falhar
-      - name: "Deploy via RSync Production"
+      # Cria arquivo temporário da chave SSH
+      - name: "Configurar chave SSH"
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key
           chmod 600 deploy_key
-          trap 'rm -f deploy_key' EXIT
 
-          ssh -i deploy_key -o StrictHostKeyChecking=no root@${{ secrets.VPS_HOST }} \
-            "mkdir -p ${{ env.VPS_PATH }}"
+      # Adiciona fingerprint da VPS no known_hosts
+      - name: "Adicionar VPS ao known_hosts"
+        run: |
+          # Evita prompt de confirmação SSH
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
+      # Cria diretório inicial do projeto na VPS
+      - name: "Criar estrutura inicial da VPS"
+        run: |
+          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+
+            # Cria pasta raiz do projeto caso não exista
+            mkdir -p /root/git-public-api-production
+
+          EOF
+
+      # Envia os arquivos do projeto para VPS
+      - name: "Enviar arquivos para VPS"
+        run: |
           rsync -az --delete \
             -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
             --exclude ".git" \
@@ -42,82 +57,96 @@ jobs:
             --exclude "api/storage/framework/views/*" \
             ./ root@${{ secrets.VPS_HOST }}:${{ env.VPS_PATH }}/
 
-      - name: "Build e Comandos Laravel Production"
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
+      # Cria os arquivos .env automaticamente na VPS
+      - name: "Criar .envs do servidor"
+        run: |
+          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+
+            # Entra na pasta do projeto
+            cd /root/git-public-api-production
+
+            # Cria .env raiz utilizado pelo docker/infra
+            echo '${{ secrets.ENV_ROOT }}' > .env
+
+            # Cria .env da aplicação Laravel
+            echo '${{ secrets.ENV_API }}' > api/.env
+
+          EOF
+
+      # Executa deploy docker e bootstrap Laravel
+      - name: "Build e deploy containers"
+        run: |
+          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
+
+            # Interrompe execução caso algum comando falhe
             set -e
 
-            cd ${{ env.VPS_PATH }}
+            # Entra na pasta do projeto
+            cd /root/git-public-api-production
 
-            # Garante a existência da subpasta antes da escrita do .env
-            mkdir -p api
+            # Atualiza imagens caso existam imagens remotas
+            docker compose -f docker-compose.production.yml pull || true
 
-            # Escrita segura dos arquivos de ambiente
-            cat > .env << 'ENV_ROOT_EOF'
-            ${{ secrets.ENV_ROOT }}
-            ENV_ROOT_EOF
+            # Faz build e sobe containers
+            docker compose -f docker-compose.production.yml up -d --build
 
-            cat > api/.env << 'ENV_API_EOF'
-            ${{ secrets.ENV_API }}
-            ENV_API_EOF
+            # Aguarda containers iniciarem corretamente
+            sleep 15
 
-            chmod 600 .env api/.env
+            # Instala dependências PHP de produção
+            docker compose -f docker-compose.production.yml exec -T api \
+              composer install --no-dev --optimize-autoloader --no-interaction
 
-            # Correção de quebra de linha de scripts/configs do Windows
-            sed -i 's/\r//' docker/nginx/conf.d/production.conf || true
+            # Limpa caches antigos Laravel
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan optimize:clear
 
-            # Atalho para o comando docker compose unificado
-            dc() {
-              docker compose --env-file .env -f ${{ env.COMPOSE_FILE }} "$@"
-            }
+            # Gera APP_KEY caso ainda não exista
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan key:generate --force || true
 
-            echo "=> Atualizando imagens e subindo a infraestrutura..."
-            dc pull || true
-            dc up -d --build
+            # Ajusta permissões Laravel
+            docker compose -f docker-compose.production.yml exec -T api \
+              chmod -R 775 storage bootstrap/cache
 
-            ...
+            # Cria symlink storage/public
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan storage:link || true
 
-            echo "=> Criando estruturas de pastas internas requeridas pelo Laravel..."
-            dc exec -T -u root app mkdir -p \
-              /var/www/api/storage/framework/cache/data \
-              /var/www/api/storage/framework/sessions \
-              /var/www/api/storage/framework/views \
-              /var/www/api/storage/logs \
-              /var/www/api/bootstrap/cache
+            # Executa migrations em produção
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan migrate --force
 
-            echo "=> Ajustando permissões de escrita (apenas nas pastas necessárias)..."
-            dc exec -T -u root app chown -R www-data:www-data /var/www/api/storage /var/www/api/bootstrap/cache
-            dc exec -T -u root app chmod -R 775 /var/www/api/storage /var/www/api/bootstrap/cache
+            # Gera cache de configurações
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan config:cache
 
-            echo "=> Gerenciando dependências do PHP com Composer (Modo Produção)..."
-            dc exec -T -u root app composer install \
-              --no-dev \
-              --no-interaction \
-              --optimize-autoloader \
-              --working-dir=/var/www/api
+            # Gera cache de rotas
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan route:cache
 
-            echo "=> Limpando caches antigos do Artisan..."
-            dc exec -T -u root app php /var/www/api/artisan optimize:clear
+            # Gera cache de views
+            docker compose -f docker-compose.production.yml exec -T api \
+              php artisan view:cache
 
-            echo "=> Criando links simbólicos de storage..."
-            dc exec -T -u root app php /var/www/api/artisan storage:link --quiet || true
+            # Reinicia containers principais
+            docker compose -f docker-compose.production.yml restart api nginx
 
-            echo "=> Executando as migrações do banco de dados..."
-            dc exec -T -u root app php /var/www/api/artisan migrate --force
+          EOF
 
-            echo "=> Gerando novos caches de performance do Laravel..."
-            dc exec -T -u root app php /var/www/api/artisan optimize
+      # Exibe containers ativos na VPS
+      - name: "Verificar containers"
+        run: |
+          ssh -i deploy_key root@${{ secrets.VPS_HOST }} << 'EOF'
 
-            echo "=> Forçando recriação/releitura limpa dos containers de microsserviços..."
-            dc up -d --force-recreate app nginx queue scheduler
+            # Lista containers ativos
+            docker ps
 
-            echo "=> Reiniciando workers do ecossistema Laravel..."
-            dc exec -T -u root app php /var/www/api/artisan queue:restart || true
-            dc restart nginx queue scheduler || true
+          EOF
 
-            echo "=> Status atual dos containers em produção:"
-            dc ps
+      # Remove chave privada temporária
+      - name: "Limpeza"
+        if: always()
+        run: |
+          # Remove arquivo da chave SSH
+          rm -f deploy_key
