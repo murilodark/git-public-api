@@ -25,8 +25,9 @@ services:
     working_dir: /var/www/api
     volumes:
       - ./api:/var/www/api
-    command: php artisan queue:work --sleep=3 --tries=3 --timeout=90
+    command: sh -c "until [ -f vendor/autoload.php ]; do echo 'Aguardando composer install...'; sleep 3; done; php artisan queue:work redis --sleep=3 --tries=3 --timeout=90"
     depends_on:
+      - app
       - db
       - redis
     networks:
@@ -40,8 +41,9 @@ services:
     working_dir: /var/www/api
     volumes:
       - ./api:/var/www/api
-    command: php artisan schedule:work
+    command: sh -c "until [ -f vendor/autoload.php ]; do echo 'Aguardando composer install...'; sleep 3; done; php artisan schedule:work"
     depends_on:
+      - app
       - db
       - redis
     networks:
