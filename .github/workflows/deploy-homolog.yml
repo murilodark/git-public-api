@@ -28,7 +28,7 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: "Adicionar VPS ao known_hosts"
+      - name: "- Adicionar VPS ao known_hosts -"
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
