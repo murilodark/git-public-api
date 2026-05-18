@@ -7,25 +7,36 @@
 /api/public/hot
 /api/.phpunit.result.cache
 
-# Correção: Garante que chaves em subpastas do storage também sejam ignoradas
+# Chaves privadas
 /api/storage/**/*.key
 
 # ======================================
 # Ambiente
 # ======================================
+# ROOT
 .env
-.env.*
-!.env.example
+.env.homolog
+.env.production
 
+!.env.example
+!.env.homolog.example
+!.env.production.example
+
+# API
 /api/.env
-/api/.env.*
+/api/.env.homolog
+/api/.env.production
+
 !/api/.env.example
+!/api/.env.homolog.example
+!/api/.env.production.example
+
 
 /mcp-pescala/
 /docs-privado/
 
 # ======================================
-# Cache, logs e temporários (Preservando a estrutura para o Docker)
+# Cache, logs e temporários
 # ======================================
 /api/storage/framework/cache/*
 /api/storage/framework/sessions/*
@@ -33,7 +44,6 @@
 /api/storage/framework/views/*
 /api/storage/logs/*
 
-# Mantém os arquivos estruturais ocultos para o Git criar as pastas vazias no deploy
 !/api/storage/framework/cache/.gitignore
 !/api/storage/framework/sessions/.gitignore
 !/api/storage/framework/testing/.gitignore
@@ -57,8 +67,7 @@
 *.sock
 mysql.sock
 
-# Correção: Impede que o *.lock genérico bloqueie o composer.lock do Laravel
-*.lock
+# Lockfiles
 !/api/composer.lock
 
 # ======================================

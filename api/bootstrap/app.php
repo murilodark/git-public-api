@@ -1,18 +1,36 @@
 <?php
 
+
+use App\Exceptions\ApiExceptionHandler;
 use Illuminate\Foundation\Application;
-use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Support\Facades\File;
+use App\Http\Middleware\ForceJsonResponse;
+
+
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
-        web: __DIR__.'/../routes/web.php',
-        commands: __DIR__.'/../routes/console.php',
-        health: '/up',
+        using: function () {
+
+            $path = base_path('routes/api');
+
+            if (is_dir($path)) {
+
+                foreach (File::files($path) as $file) {
+
+                    if (preg_match('/^v\d+\.php$/', $file->getFilename())) {
+                        require $file->getPathname();
+                    }
+                }
+            }
+        }
     )
-    ->withMiddleware(function (Middleware $middleware): void {
-        //
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->api(prepend: [
+            ForceJsonResponse::class,
+        ]);
     })
-    ->withExceptions(function (Exceptions $exceptions): void {
-        //
-    })->create();
+    ->withExceptions(new ApiExceptionHandler()) //trata as exceções de forma personalizada para a API
+    
+    ->create();
