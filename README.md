@@ -1,393 +1,205 @@
-# VPS Git Deploy Automático
+# Git Public API
 
-Estrutura pública pronta para provisionamento de VPS + deploy automático CI/CD utilizando:
-
-* Docker
-* Traefik
-* Docker Compose
-* Laravel API
-* React Frontend
-* GitHub Actions
-* SSL automático Let's Encrypt
-* Git Flow (`develop` = homolog / `main` = production)
+API Laravel pronta para deploy automatizado utilizando Docker, múltiplos ambientes e integração com Traefik.
 
 ---
 
 # Objetivo
 
-Este projeto tem como objetivo disponibilizar uma estrutura desacoplada e escalável para aplicações modernas, separando:
+Este repositório contém exclusivamente a estrutura backend da arquitetura.
 
-* Backend Laravel (API)
-* Frontend React
-* Infraestrutura Docker
-* Proxy reverso Traefik
-* Ambientes independentes:
+Responsabilidades:
 
-  * homolog
-  * production
-  * local
+- API Laravel;
+- containers Docker;
+- PHP;
+- Nginx;
+- MySQL;
+- workers;
+- ambientes separados;
+- workflows de deploy;
+- homologação e produção.
 
-Tudo com deploy automatizado diretamente da branch do GitHub para VPS.
+A documentação geral da infraestrutura está centralizada no repositório âncora:
 
----
-
-
-# Instalação do Traefik (Infraestrutura Global VPS)
-
-O Traefik será responsável por:
-
-* Proxy reverso
-* HTTPS automático
-* SSL Let's Encrypt
-* Roteamento dos containers
-* Entrada única da VPS
-
-O Traefik deve ser instalado apenas uma vez na VPS.
+```txt
+laravel-vps-multidomain-deploy
+````
 
 ---
 
-# Criar Estrutura
-
-```bash
-mkdir -p /root/traefik
-cd /root/traefik
-```
-
----
-
-# Criar Network Global
-
-Todos os projetos utilizarão esta network compartilhada:
-
-```bash
-docker network create traefik-proxy
-```
-
----
-
-# Criar arquivo `.env`
-
-```bash
-nano .env
-```
-
-Conteúdo:
-
-```env
-ACME_EMAIL=seu-email@dominio.com
-```
-
----
-
-# Criar docker-compose.yml
-
-```bash
-nano docker-compose.yml
-```
-
-Conteúdo:
-
-```yaml
-services:
-  traefik:
-    image: traefik:v2.11
-    container_name: traefik
-
-    command:
-      - --api.dashboard=false
-      - --api.insecure=false
-
-      - --log.level=INFO
-
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
-
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}
-      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-
-    restart: always
-
-    ports:
-      - "80:80"
-      - "443:443"
-
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./letsencrypt:/letsencrypt
-
-    networks:
-      - traefik-proxy
-
-networks:
-  traefik-proxy:
-    external: true
-```
-
----
-
-# Criar arquivo acme.json
-
-```bash
-mkdir -p letsencrypt
-
-touch letsencrypt/acme.json
-
-chmod 600 letsencrypt/acme.json
-```
-
----
-
-# Subir Traefik
-
-```bash
-docker compose up -d
-```
-
----
-
-# Validar Containers
-
-```bash
-docker ps
-```
-
-Deve aparecer:
-
-```text
-traefik
-```
-
----
-
-# Como os Projetos Utilizam o Traefik
-
-Os projetos Laravel/React não expõem portas diretamente.
-
-Eles apenas entram na network:
-
-```yaml
-networks:
-  - traefik-proxy
-```
-
-e recebem labels:
-
-```yaml
-labels:
-  - traefik.enable=true
-```
-
-O Traefik detecta automaticamente os containers Docker e cria:
-
-* HTTPS
-* SSL
-* roteamento
-* domínio
-
-automaticamente.
-
----
-
-# Exemplo de Integração de Container -
-
-```yaml
-services:
-  nginx:
-    networks:
-      - traefik-proxy
-
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.api.rule=Host(`api.seudominio.com`)
-      - traefik.http.routers.api.entrypoints=websecure
-      - traefik.http.routers.api.tls.certresolver=letsencrypt
-
-networks:
-  traefik-proxy:
-    external: true
-```
-
----
-
-# Importante
-
-A VPS deve liberar:
-
-| Porta | Uso   |
-| ----- | ----- |
-| 80    | HTTP  |
-| 443   | HTTPS |
-
----
-
-# Firewall Ubuntu
-
-```bash
-ufw allow 80
-ufw allow 443
-```
-
----
-
-# Resultado Final
-
-Após subir um projeto:
-
-```text
-Container
-    ↓
-Traefik
-    ↓
-HTTPS automático
-    ↓
-Let's Encrypt
-    ↓
-Domínio funcionando
-```
-
-
-# Arquitetura
-
-## Frontend
-
-| Ambiente   | URL                                              |
-| ---------- | ------------------------------------------------ |
-| Homolog    | `git-public-front-homolog.olirumcloud.com.br`    |
-| Production | `git-public-front-production.olirumcloud.com.br` |
-
----
-
-## Backend API
-
-| Ambiente   | URL                                            |
-| ---------- | ---------------------------------------------- |
-| Homolog    | `git-public-api-homolog.olirumcloud.com.br`    |
-| Production | `git-public-api-production.olirumcloud.com.br` |
-
----
-
-# Fluxo de Deploy
-
-## Homolog
-
-```text
-push develop
-    ↓
-GitHub Actions
-    ↓
-Deploy automático VPS
-    ↓
-docker-compose.homolog.yml
-```
-
----
-
-## Production
-
-```text
-push main
-    ↓
-GitHub Actions
-    ↓
-Deploy automático VPS
-    ↓
-docker-compose.production.yml
-```
+# Stack Backend
+
+* Laravel
+* PHP
+* Nginx
+* MySQL
+* Docker
+* Docker Compose
+* GitHub Actions
 
 ---
 
 # Estrutura do Projeto
 
-```text
+```txt
 .
-├── .codex/
-├── .github/
-│   └── workflows/
-│       ├── deploy-homolog.yml
-│       └── deploy-prod.yml
-│
 ├── api/
-│   ├── app/
-│   ├── bootstrap/
-│   ├── config/
-│   ├── database/
-│   ├── public/
-│   ├── resources/
-│   ├── routes/
-│   ├── storage/
-│   ├── tests/
-│   ├── vendor/
-│   │
-│   ├── .env
-│   ├── .env.homolog
-│   ├── .env.production
-│   ├── artisan
-│   ├── composer.json
-│   └── vite.config.js
-│
 ├── docker/
-│   ├── mysql/
-│   ├── mysql-backup/
-│   ├── nginx/
-│   │   └── conf.d/
-│   │       ├── homolog.conf
-│   │       ├── local.conf
-│   │       └── production.conf
-│   │
-│   └── php/
-│
-├── docs/
-├── docs-privado/
-├── mcp-pescala/
-│
-├── .env.example
-├── .env.homolog
-├── .env.local
-├── .env.production
-│
+├── .github/
 ├── docker-compose.local.yml
 ├── docker-compose.homolog.yml
 ├── docker-compose.production.yml
-│
-├── Dockerfile
-├── README.md
-└── AGENTS.md
+└── README.md
 ```
 
 ---
 
-# Conceito dos ENVs
+# Estrutura Backend
 
-O projeto possui dois níveis de `.env`.
+## API Laravel
+
+```txt
+api/
+```
+
+Contém:
+
+* controllers;
+* services;
+* models;
+* migrations;
+* providers;
+* rotas;
+* middlewares;
+* filas;
+* autenticação;
+* regras de negócio.
 
 ---
 
-# 1. ENV ROOT (Infraestrutura)
+## Docker
 
-Arquivos localizados na raiz do projeto.
+```txt
+docker/
+```
 
-Responsáveis por:
+Responsável por:
 
-* Docker
-* Containers
-* Portas
-* Domínios
-* Traefik
-* SSL
-* Configurações de infraestrutura
+* PHP;
+* Nginx;
+* MySQL;
+* backup;
+* configurações da infraestrutura backend.
 
-Arquivos:
+---
 
-```text
+## GitHub Actions
+
+```txt
+.github/workflows
+```
+
+Responsável pelos deploys automáticos:
+
+```txt
+deploy-homolog.yml
+deploy-prod.yml
+```
+
+---
+
+# Ambientes
+
+## Local
+
+```txt
+docker-compose.local.yml
+```
+
+---
+
+## Homologação
+
+```txt
+docker-compose.homolog.yml
+```
+
+Deploy automático pela branch:
+
+```txt
+develop
+```
+
+---
+
+## Produção
+
+```txt
+docker-compose.production.yml
+```
+
+Deploy automático pela branch:
+
+```txt
+main
+```
+
+---
+
+# Fluxo de Deploy
+
+```txt
+develop -> homologação
+main    -> produção
+```
+
+---
+
+# Variáveis de Ambiente
+
+## Infraestrutura Docker
+
+Arquivo:
+
+```txt
+.env
+```
+
+Responsável por:
+
+* containers;
+* portas;
+* domínios;
+* docker compose;
+* variáveis da infraestrutura.
+
+---
+
+## Laravel
+
+Arquivo:
+
+```txt
+api/.env
+```
+
+Responsável por:
+
+* banco de dados;
+* cache;
+* filas;
+* autenticação;
+* mail;
+* drivers Laravel.
+
+---
+
+# Arquivos de Ambiente
+
+## Root
+
+```txt
 .env.local
 .env.homolog
 .env.production
@@ -395,45 +207,9 @@ Arquivos:
 
 ---
 
-## Exemplo
+## Laravel
 
-```env
-PROJECT_NAME=git-public-api
-
-APP_PORT=8000
-
-MYSQL_PORT=3306
-
-DOMAIN_API=git-public-api-homolog.olirumcloud.com.br
-
-TRAEFIK_NETWORK=traefik-public
-```
-
----
-
-# 2. ENV API (Laravel)
-
-Arquivos localizados dentro:
-
-```text
-/api/
-```
-
-Responsáveis por:
-
-* Configurações Laravel
-* Banco de dados
-* Cache
-* Queue
-* Mail
-* JWT
-* Redis
-* APP_KEY
-* Serviços externos
-
-Arquivos:
-
-```text
+```txt
 api/.env
 api/.env.homolog
 api/.env.production
@@ -441,159 +217,18 @@ api/.env.production
 
 ---
 
-## Exemplo
+# Subindo Ambiente Local
 
-```env
-APP_NAME=Laravel
-APP_ENV=production
-APP_KEY=
-APP_DEBUG=false
-
-DB_CONNECTION=mysql
-DB_HOST=mysql
-DB_PORT=3306
-DB_DATABASE=app
-DB_USERNAME=root
-DB_PASSWORD=123456
-```
-
----
-
-# Docker Compose por Ambiente
-
-Cada ambiente possui seu próprio compose:
-
-| Arquivo                       | Ambiente   |
-| ----------------------------- | ---------- |
-| docker-compose.local.yml      | Local      |
-| docker-compose.homolog.yml    | Homolog    |
-| docker-compose.production.yml | Production |
-
----
-
-# NGINX por Ambiente
-
-Cada ambiente possui configuração própria:
-
-| Arquivo         | Ambiente   |
-| --------------- | ---------- |
-| local.conf      | Local      |
-| homolog.conf    | Homolog    |
-| production.conf | Production |
-
----
-
-# Traefik
-
-O Traefik é responsável por:
-
-* Proxy reverso
-* HTTPS automático
-* SSL Let's Encrypt
-* Roteamento de containers
-* Exposição pública
-
----
-
-# SSL Automático
-
-Os certificados são gerados automaticamente pelo Let's Encrypt via Traefik.
-
-Não é necessário configurar SSL manualmente.
-
----
-
-# Git Flow
-
-| Branch  | Ambiente   |
-| ------- | ---------- |
-| develop | Homolog    |
-| main    | Production |
-
----
-
-# GitHub Actions
-
-Deploy automatizado utilizando:
-
-```text
-.github/workflows/
-```
-
-Arquivos:
-
-```text
-deploy-homolog.yml
-deploy-prod.yml
-```
-
----
-
-# Secrets GitHub Necessários
-
-## Homolog
-
-```text
-SSH_PRIVATE_KEY
-ENV_ROOT
-ENV_API
-```
-
----
-
-## Production
-
-```text
-SSH_PRIVATE_KEY
-ENV_ROOT
-ENV_API
-```
-
----
-
-# Fluxo de ENV no Deploy
-
-Durante o deploy:
-
-## 1. GitHub Actions
-
-Envia:
-
-* código
-* envs
-* docker compose
-
-para VPS.
-
----
-
-## 2. VPS
-
-Executa:
+## Copiar variáveis
 
 ```bash
-docker compose up -d --build
+cp .env.local .env
+cp api/.env.local api/.env
 ```
 
 ---
 
-## 3. Containers
-
-Sobem automaticamente:
-
-* nginx
-* php-fpm
-* mysql
-* redis
-* queue
-* scheduler
-* traefik
-
----
-
-# Inicialização Local
-
-## Subir ambiente
+## Subir containers
 
 ```bash
 docker compose -f docker-compose.local.yml up -d --build
@@ -604,90 +239,184 @@ docker compose -f docker-compose.local.yml up -d --build
 ## Instalar dependências Laravel
 
 ```bash
-docker exec -it app composer install
+docker exec -it laravel_app composer install
 ```
 
 ---
 
-## Gerar APP_KEY
+## Executar migrations
 
 ```bash
-docker exec -it app php artisan key:generate
+docker exec -it laravel_app php artisan migrate
 ```
 
 ---
 
-## Rodar migrations
+# Estrutura Docker
 
-```bash
-docker exec -it app php artisan migrate
+## PHP
+
+```txt
+docker/php
 ```
 
 ---
 
-# Deploy Manual VPS
+## Nginx
 
-## Homolog
-
-```bash
-docker compose -f docker-compose.homolog.yml up -d --build
+```txt
+docker/nginx
 ```
 
 ---
 
-## Production
+## MySQL
 
-```bash
-docker compose -f docker-compose.production.yml up -d --build
+```txt
+docker/mysql
 ```
 
 ---
 
-# Segurança
+## Backup
 
-Recomendações:
-
-* Nunca commitar `.env`
-* Utilizar GitHub Secrets
-* Utilizar SSH Key sem senha para Actions
-* Restringir firewall
-* Utilizar fail2ban
-* Desabilitar login root por senha
-* Utilizar somente autenticação SSH
+```txt
+docker/mysql-backup
+```
 
 ---
 
-# Tecnologias
+# Nginx
 
-* Laravel
-* PHP
-* React
-* Docker
-* Docker Compose
-* NGINX
-* Traefik
-* GitHub Actions
-* MySQL
-* Redis
-* Linux VPS
+Os ambientes possuem configurações independentes:
+
+```txt
+docker/nginx/conf.d/local.conf
+docker/nginx/conf.d/homolog.conf
+docker/nginx/conf.d/production.conf
+```
 
 ---
 
-# Objetivo Final
+# Deploy Automático
 
-Ter uma infraestrutura:
+Os deploys utilizam:
 
-* reutilizável
-* escalável
-* padronizada
-* desacoplada
-* pronta para CI/CD
-* pronta para múltiplos projetos
-* pronta para homolog e produção
-* pronta para SSL automático
+* GitHub Actions;
+* SSH;
+* RSync;
+* Docker Compose.
+
+O pipeline executa:
+
+* sincronização dos arquivos;
+* rebuild dos containers;
+* restart automático;
+* atualização da aplicação.
 
 ---
 
-# Licença
+# Estrutura de Deploy
 
-MIT License
+## Homologação
+
+```txt
+git-public-api-homolog.olirumcloud.com.br
+```
+
+---
+
+## Produção
+
+```txt
+git-public-api-production.olirumcloud.com.br
+```
+
+---
+
+# Traefik
+
+A instalação do Traefik NÃO está neste repositório.
+
+Toda a documentação da infraestrutura está centralizada em:
+
+```txt
+laravel-vps-multidomain-deploy
+```
+
+Diretório:
+
+```txt
+infra/traefik
+```
+
+---
+
+# Recursos Implementados
+
+* múltiplos ambientes;
+* deploy automatizado;
+* containers isolados;
+* Docker;
+* SSL automático;
+* CI/CD;
+* arquitetura desacoplada;
+* integração com frontend React.
+
+---
+
+# Roadmap
+
+* filas distribuídas;
+* Redis;
+* monitoramento;
+* observabilidade;
+* cache distribuído;
+* testes automatizados;
+* health checks;
+* backup automatizado.
+
+---
+
+# Integração Frontend
+
+Frontend oficial:
+
+```txt
+git-public-front
+```
+
+---
+
+# Repositório Âncora
+
+Documentação completa da infraestrutura:
+
+```txt
+laravel-vps-multidomain-deploy
+```
+
+---
+
+# Topics GitHub
+
+```txt
+laravel
+php
+docker
+docker-compose
+api
+backend
+nginx
+mysql
+github-actions
+deployment
+ci-cd
+vps
+```
+
+---
+
+# Autor
+
+Murilo Dark
