@@ -102,8 +102,13 @@ jobs:
             dc exec -T -u root app php /var/www/api/artisan key:generate --force || true
 
             dc exec -T -u root app php /var/www/api/artisan storage:link --quiet || true
+            
+            dc exec -T -u root app php /var/www/api/artisan migrate --force --seed
 
-            dc exec -T -u root app php /var/www/api/artisan migrate --force
+            dc exec -T -u root app php /var/www/api/artisan optimize
+
+
+
 
             dc exec -T -u root app php /var/www/api/artisan optimize
 
